@@ -1,13 +1,48 @@
 # UpNote MCP server
 
-An MCP server that connects Claude Code, Claude Desktop and Codex to the [UpNote](https://getupnote.com)
-desktop app on macOS. With it, Claude and Codex can search and read your notes, create formatted and tagged notes,
-edit a note, add to its end, move it to another notebook, turn a heading into a collapsible
-section, change its tags, move notes to Trash and back, and open notes in the app.
+Let Claude and Codex work with your [UpNote](https://getupnote.com) notes on macOS.
+UpNote has no public API, so this MCP server reads the app's local database (read-only)
+and makes every change through UpNote's own `upnote://` links.
 
-It never writes to UpNote's database. Reads open the database read-only, and every change goes
-through UpNote's own `upnote://` links, so the app makes the change and syncs it like one made
-by hand.
+Ask in plain language:
+
+- "Find my notes about JSON Patch and summarize them."
+- "What did I change this week?"
+- "Create a note in Get Started with a checklist for tomorrow."
+- "Add a follow-up item to my Plans note."
+- "In my Plans note, change Triage to In progress." Claude previews the edit first.
+
+It works with Claude Code, Claude Desktop and Codex. It has sixteen tools: search, read, create,
+edit, append, insert under a heading, move to another notebook, make a collapsible section,
+change tags, move to Trash and back, and open a note in the app.
+
+> **Unofficial and macOS only.** UpNote has no editing API, so this server depends on the
+> app's local data format and two undocumented links (trash and restore). It was built against
+> UpNote 9.22.2 to 9.22.6 (data version 17) and the author runs it on 9.22.9. An UpNote update
+> can break it. The server checks the database format on every connection and fails with a
+> clear message instead of returning wrong results.
+
+## Safety and known risks
+
+- **Reads cannot change anything.** The database is opened read-only, and an authorizer
+  refuses everything except reading.
+- **Writes go through UpNote.** The server never writes to the database. UpNote makes each
+  change and syncs it as if you had made it by hand. Text sent to UpNote is cleaned of
+  anything that could run code or send data out.
+- **An edit makes a new note.** UpNote cannot change a note in place. An edit creates a
+  checked new version and then moves the original to Trash, where `restore_note` can bring it
+  back. The new note gets a new id and creation date. Version History stays with the original,
+  and pin and bookmark must be set again by hand. Every edit shows a preview with warnings first.
+  The tools refuse notes that have attachments or images, links from other notes, a web share link,
+  or a template.
+- **Nothing is deleted for good.** No tool empties Trash.
+- **UpNote once emptied a notebook's membership list.** On 2026-10-11 a note created in a
+  notebook of 351 left it holding 1 (UpNote 9.22.6, once, during its daily backup and re-sync).
+  The notes stayed intact. The server cannot prevent this, but it checks the notebook before and
+  after each change and reports a loss. UpNote's daily backup is the way back. See
+  [Limits and known issues](#limits-and-known-issues).
+- **Full Disk Access.** macOS needs it to read UpNote's data. You grant it to a small launcher
+  that runs only this server. See [Full Disk Access](#full-disk-access) for what that allows.
 
 ## Requirements
 
@@ -15,39 +50,35 @@ by hand.
   `~/Library/Containers/com.getupnote.desktop/Data/Library/Application Support/UpNote/upnote.sqlite3`.
   Set `UPNOTE_DB` to point it elsewhere.
 - [python.org's Python](https://www.python.org/downloads/macos/) 3.12 or newer, and `clang`
-  from the Xcode Command Line Tools to build the launcher. [Full Disk Access](#full-disk-access)
-  explains why the server runs this way.
+  from the Xcode Command Line Tools (`xcode-select --install`) to build the launcher.
+  [Full Disk Access](#full-disk-access) explains why the server runs this way.
 - UpNote running, for any tool that changes a note or opens the app.
 
 ## Install
 
-The launcher uses `~/.claude/mcp-servers/upnote-mcp/server.py` for every client.
-For a fresh install, put a versioned copy of this folder outside your working checkout,
-then create a symlink at `~/.claude/mcp-servers/upnote-mcp` pointing to that copy.
-Create the parent directory first, and leave any existing installation intact until you
-have recorded its target and validated the replacement with every client. Direct links
-to a working checkout are useful for development but pick up every edit and pull.
+```bash
+git clone https://github.com/andreiGl/upnote-mcp ~/.claude/mcp-servers/upnote-mcp
+~/.claude/mcp-servers/upnote-mcp/install.sh
+```
 
-For an existing installation, keep its launcher, signing identity and venv. A Python-only
-server update does not require rebuilding or resigning the launcher. Pause calls in both
-clients before switching the package link, use a temporary sibling symlink and an atomic
-rename, then reconnect the affected MCP servers. Roll back only the changed link and
-client entry; do not restore a database or unrelated settings.
+The script links the folder into `~/.claude/mcp-servers/`, builds a virtual environment, and
+builds and signs the launcher. It changes no client setting. When it finishes, it prints the
+next steps, which are:
 
-For a fresh install, build the venv and launcher, then register with Claude Code for all
-projects:
+1. Give the launcher **Full Disk Access**: System Settings, Privacy & Security, Full Disk
+   Access, press `+`, then `Cmd+Shift+G` and paste `~/.claude/mcp-servers/upnote-mcp-launcher`.
+2. Register the launcher with your client.
+3. Restart the client and ask Claude to run `check_upnote_setup`.
+
+### Register with a client
+
+Claude Code, for all projects:
 
 ```bash
-/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12 -m venv ~/.claude/mcp-servers/upnote-mcp-venv
-~/.claude/mcp-servers/upnote-mcp-venv/bin/python -m pip install 'mcp==2.2.0'
-clang -O2 -o ~/.claude/mcp-servers/upnote-mcp-launcher ~/.claude/mcp-servers/upnote-mcp/launcher.c
-codesign -s - -i ca.glotov.upnote-mcp-launcher -f ~/.claude/mcp-servers/upnote-mcp-launcher
 claude mcp add --scope user upnote -- ~/.claude/mcp-servers/upnote-mcp-launcher
 ```
 
-Keep the `mcp` version in the venv in step with the one `server.py` declares.
-
-For Claude Desktop, add the launcher by its absolute path to
+Claude Desktop: add the launcher by its absolute path to
 `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```json
@@ -60,16 +91,14 @@ For Claude Desktop, add the launcher by its absolute path to
 }
 ```
 
-### Codex
-
-Register the same stable launcher with Codex, using your absolute path:
+Codex:
 
 ```bash
 codex mcp add upnote -- /Users/you/.claude/mcp-servers/upnote-mcp-launcher
 ```
 
-Alternatively, add this entry to `~/.codex/config.toml`. Merge it with an existing
-`upnote` entry rather than adding a duplicate or replacing unrelated settings:
+Or add this entry to `~/.codex/config.toml`. Merge it with an existing `upnote` entry rather
+than adding a duplicate:
 
 ```toml
 [mcp_servers.upnote]
@@ -79,22 +108,46 @@ tool_timeout_sec = 30
 enabled_tools = ["search_notes", "list_notes", "get_note", "list_notebooks", "list_tags", "run_select", "check_upnote_setup", "create_note", "replace_note", "append_to_note", "insert_after_heading", "move_note", "make_section", "move_note_to_trash", "restore_note", "open_in_upnote"]
 ```
 
-These are the server's sixteen tools. Keep the client's normal approval policy; no
-blanket automatic approval is needed. A project-only test can instead use
-`.codex/config.toml` in a trusted project. See [OpenAI's MCP configuration](https://learn.chatgpt.com/docs/extend/mcp).
+These are the server's sixteen tools. Keep the client's normal approval policy; no blanket
+automatic approval is needed.
+
+### Manual install
+
+The script runs these steps:
+
+```bash
+/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12 -m venv ~/.claude/mcp-servers/upnote-mcp-venv
+~/.claude/mcp-servers/upnote-mcp-venv/bin/python -m pip install 'mcp==2.2.0'
+clang -O2 -o ~/.claude/mcp-servers/upnote-mcp-launcher ~/.claude/mcp-servers/upnote-mcp/launcher.c
+codesign -s - -i ca.glotov.upnote-mcp-launcher -f ~/.claude/mcp-servers/upnote-mcp-launcher
+```
+
+Keep the `mcp` version in the venv in step with the one `server.py` declares. The launcher
+always runs `~/.claude/mcp-servers/upnote-mcp/server.py`, so the checkout must sit at that
+path or be linked there.
 
 ### macOS access and reconnecting
 
-The stable launcher may need the [Full Disk Access](#full-disk-access) grant described
-below. The host app's permissions also matter: during local Codex desktop validation,
-its ChatGPT app needed **Files & Folders → UpNote** enabled even though the launcher
-already had access. That narrow grant resolved the denial; the host app did not need
-Full Disk Access. Inspect the actual setup error and grant only the access needed.
+The launcher may need the [Full Disk Access](#full-disk-access) grant. The host app's permissions
+also matter: during local Codex desktop validation, its ChatGPT app needed **Files & Folders,
+UpNote** enabled even though the launcher already had access. Read the actual setup error and
+grant only the access needed.
 
-Run `check_upnote_setup` before reading or changing notes. Reconnect MCP servers or start
-fresh client sessions after a source/configuration change. A running session can retain
-its old server process and tool catalog. Client registrations and permissions remain
-separate even when they launch the same implementation.
+Run `check_upnote_setup` before reading or changing notes. Reconnect MCP servers or start fresh
+client sessions after a source or configuration change. A running session can keep its old server
+process and tool catalog.
+
+## Upgrading
+
+The running server keeps the `server.py` it started with, so restart your clients after an update.
+For a plain checkout, run `git pull` in `~/.claude/mcp-servers/upnote-mcp`. A Python-only update
+does not need a rebuilt or re-signed launcher. Rebuilding the launcher loses its Full Disk Access
+grant: remove it, add it back, and restart Claude.
+
+To switch between versions without a gap, keep each version in its own folder, pause calls in every
+client, replace the `~/.claude/mcp-servers/upnote-mcp` link with a temporary sibling link and an
+atomic rename, then reconnect the MCP servers. To roll back, restore only that link. Do not restore
+a database or unrelated settings.
 
 ## Tools
 
@@ -119,22 +172,6 @@ separate even when they launch the same implementation.
 
 Notes in Trash are left out of searches and lists unless `include_trashed` is set. No tool
 deletes a note permanently.
-
-## Examples
-
-Ask in plain language. Claude picks the tools.
-
-- "What's my latest note?"
-- "Find my notes about JSON Patch and summarize them."
-- "Which notebooks have the most notes?"
-- "Create a note in Get Started with a checklist for tomorrow."
-- "Move the note titled Old draft to Trash." Claude should confirm which note first.
-- "In my Plans note, change Triage to In progress." Claude previews the replacement and shows
-  any warnings before making it.
-- "Add a follow-up item to my Plans note." Claude appends it and keeps the rest of the note.
-- "What did I change this week?" Claude lists notes with `updated_after`.
-- "Move my Plans note to Archive." Claude previews the move, then rebuilds the note there.
-- "Open my Recipes notebook in UpNote."
 
 ## Formatting
 
@@ -162,204 +199,20 @@ Tags go in `create_note`'s `tags` parameter. The server adds each one as a hasht
 end of the note, which is how UpNote stores tags, and waits until UpNote has recorded them. A
 `#hashtag` typed in the body stays plain text.
 
-## How changes are made
+## Editing notes
 
-- **Reads** use a read-only SQLite connection. An authorizer refuses everything except reading,
-  including writes, PRAGMA and ATTACH.
-- **Create** sends UpNote's documented `note/new` link. The body is Markdown, with raw HTML for
-  what Markdown can't express, such as UpNote's collapsible sections. The formatting guide Claude
-  follows is part of the tool's description.
-- **Trash and restore** send `note/moveToTrash` and `note/restore`. Neither is in UpNote's
-  documentation, but both are in the app's link handler. The tool checks the note in the
-  database first, so UpNote only ever receives ids that exist.
-- **The database format is checked on every connection.** If an UpNote update removes a table or
-  column the server reads, tools fail with the missing column named instead of returning wrong
-  results. `check_upnote_setup` also warns when UpNote's data version, read from `config.json`
-  next to the database, isn't the tested version 17.
-- **Every change is confirmed.** The tool polls the database until UpNote has saved the change.
-  Each step, the note itself, its notebook, its tags and Trash, waits up to ten seconds, so a
-  replace can take longer in all. A new note carries an invisible marker, an empty
-  `<span data-upnote-mcp="…">`, so the server recognises the note its own link created even if
-  another device creates one with the same title meanwhile. A rebuild drops the old marker.
-- **Nothing that could run code or send data out is sent.** Before a link goes out, the server
-  removes scripts, frames, event-handler attributes, styles that load URLs, `javascript:` and
-  `data:` links, and UpNote links that change notes, such as a planted trash link. Remote images
-  become links, since showing an image fetches its URL, and that URL could carry text copied from
-  another note. Code fences are sent as escaped code blocks, and inline code as escaped `<code>`,
-  which reads the same and leaves Markdown nothing to pair: UpNote pairs backticks across a line
-  break and `$$` across the whole text, so code written in Markdown isn't always read as code.
-  Indented code after a blank line is kept as written when nothing in it could act even read as
-  markup (no `![`, no unsafe `upnote:` URL, no tag left open), and otherwise sent as an escaped
-  code block. An indented line that continues a paragraph isn't code and is checked as text. One
-  limit: indented code inside a list or blockquote, and a fence inside a blockquote or a list nested
-  two deep, that holds unsafe markup is checked as text, so its unsafe tags are removed (and
-  reported) and a `<` in it may show as `&lt;`. An unclosed `<pre>` is text,
-  as an unclosed `<script>` is. Text that only looks like a tag, such as
-  `<YOUR_TOKEN>`, `List<String>` or `a<b && c>d`, is shown as written: only a tag Markdown would
-  read, naming an element that exists, counts as markup. Autolinks and email addresses in angle
-  brackets become links. UpNote turns any URL in plain text into a link after its own clean-up, so
-  a plain-text `upnote://` link that would change notes is split where it can't become one. It is
-  judged as UpNote reads it: up to the characters UpNote's own linker stops at, with parameter
-  names percent-decoded, routes matched exactly and `.` or `..` segments refused, so any shorter part
-  UpNote might link is safe too. A safe UpNote link written directly against other text, as in
-  `[a](upnote://x-callback-url/view)=`, is split as well and shows as plain text. A first
-  line of `---` is sent as `***`, the same horizontal rule, since UpNote would read it as the start
-  of front matter and drop the block it closes. Everything removed is reported, in the preview's warnings and in
-  `create_note`'s `removed_unsafe`. `open` and `ps` are run by
-  absolute path, since the server has Full Disk Access and `PATH` can hold folders any program of
-  this user can write to.
+UpNote cannot change a note in place, so `replace_note`, `append_to_note`, `insert_after_heading`,
+`move_note` and `make_section` all work the same way:
 
-## Replacing a note
+1. A **preview** changes nothing. It shows the note's revision, a `preview_token` and any warnings.
+2. The **apply** call passes the revision and token back, so it can only do what the preview showed.
+3. The server creates the new version, waits until UpNote has saved it with the right notebook,
+   tags and text, and only then moves the original to Trash.
 
-UpNote has no link that edits a note, so `replace_note` creates a corrected copy and moves the
-original to Trash. It takes two calls: a preview that changes nothing, then the replacement,
-which has to pass back the revision number and the `preview_token` the preview returned. The
-token is a digest of the call's arguments, so the replacement can only carry out what the
-preview showed; `append_to_note`, `move_note` and `make_section` work the same way. Without `text` it keeps the body
-as it is, for a call that only changes tags, the title or the notebook. When `text` is given, the
-preview warns if it is empty, keeps fewer than half of the original's lines, or holds markup that
-would be removed as unsafe.
-
-The preview refuses when something would be lost for good: attachments or images, links from
-other notes, a web share link, or a template. It also refuses a note already in Trash, and one in
-a notebook whose title another notebook shares. It warns, and the replacement needs those
-warnings accepted, when the note is pinned or bookmarked, sits in more than one
-notebook, has been saved 20 or more times, has collapsible sections or a body over 20,000
-characters, or was edited in the last ten minutes.
-
-A body over 30,000 characters is refused through MCP: some clients pass such inputs cut, and a
-cut body has written a truncated note. Edit large notes through a direct import of `server.py`
-instead, passing `server_only=True` to skip this check - see [Editing very large notes](#editing-very-large-notes).
-
-When the replacement is confirmed, the server compares the collapsible-section counts of the body
-it sent with the copy UpNote saved. UpNote's re-parser has dropped the section wrappers of large
-notes on re-parse (2026-11-09: a 59KB note lost 15 of 16 wrappers, progressively over three
-rebuilds). If any wrapper was lost, the original stays in place and the result is `done=false`
-naming what was dropped. The preview carries the counts in a `structure` object, `current` for the
-note as it is and `sent` for the body submitted, so a flatten shows before applying. A collapsed
-section may legitimately come back expanded, so `collapsed_sections` never gates a write; prefer
-`make_section` or `append_to_note` for notes that hold sections, and hand edits in the UpNote app
-for anything else.
-
-The trigger is not size alone: a 60KB note rebuilt cleanly the same day the 59KB one flattened,
-so the gate stays armed on every rebuild however large the note.
-
-The new version keeps the original's tags. UpNote stores a tag as a hashtag link inside the note,
-so the server adds one at the end for each tag the new text doesn't already carry, and waits until
-UpNote has recorded them. To drop a tag, name it in `remove_tags`: its links are taken out, and
-one inside a sentence becomes plain text. `add_tags` adds tags. Pin and bookmark can't be
-carried over: no link sets them (tested 2026-10-10; UpNote answers "This link is not supported."
-for routes such as `note/pin`), so the preview warns about them.
-
-The original goes to Trash only after the new version is confirmed: in its notebook, with exactly
-the expected tags, with every word of the text sent, and only if nobody changed the original in
-the meantime. For the tools that keep the content, `append_to_note`, `move_note` and
-`make_section`, every line of the original's text must also be in the new version. If anything
-fails after the new version was requested, the tool says so, leaves the original in place and
-tells Claude not to call again. If the original is edited in the moment before it goes to Trash,
-the result says so. The new version gets a new id and creation date, so Version History stays with
-the original. If the new version doesn't appear in time, the result gives a `run_select` query that
-finds it by its marker, and calling the tool again for that note within five minutes is refused,
-or names the late copy once it exists, so a retry can't make a third note. A call on a note already
-in Trash names any live note with the same title, to be checked with `get_note` before it is edited.
-A late copy the user moved to Trash no longer blocks the note.
-
-Line breaks between HTML tags are removed only outside `<pre>` blocks, Markdown code fences at any
-indent and indented code, so a code example keeps its layout. Line breaks inside a `<pre>` are
-sent as `&#10;`, which UpNote stores as real ones, so a code block with an empty line isn't split.
-The second `$` of a `$$` inside one is sent as `&#36;`: UpNote pairs `$$` into a formula on the raw
-text, and a pair reaching into a block would eat its opening tag. For the same reason `![`, `](` and `]:` in a code
-block are sent as character references, which read the same, so its content can't form an image or
-a link even if it were read as Markdown. A note made outside UpNote's create link may have no title
-heading, its title being its first line; that line isn't repeated under the new version's title.
-The exception is a note whose first line sits in a code block or a list: that line stays where it
-is, so the new version shows it twice, once as the title. A note created by link without a title
-stays untitled (tested 2026-10-10), so the title can't be left to the body. HTML sent back from
-`get_note` that starts with bare text is wrapped in a `<div>`, so it isn't read as Markdown. In
-the note's own HTML, text holding `==` or `$$` is put in a `<span>`, since UpNote would otherwise
-turn it into a highlight or a formula; in new Markdown text, `==text==` is still a highlight.
-
-`notebook` puts the new version in another notebook, and `move_note` does only that: it rebuilds
-the note unchanged in the notebook you name. UpNote has no link that moves a note, so a move costs
-what a replace does: a new id, and pin and bookmark set again by hand.
-
-Hand-written raw HTML, such as a collapsible section copied from the note's own `get_note` html,
-survives the round-trip: UpNote re-parses it as native formatting (2026-09-24, UpNote 9.22.2).
-
-## Adding to a note
-
-`append_to_note` takes only the new content, in Markdown, and adds it after everything already in
-the note. The server copies the existing content itself, so Claude never resends a long note, and
-nothing in it can be dropped or reworded on the way. It rebuilds the note through `replace_note`,
-with the same preview, warnings and checks, so the result has a new id and the original goes to
-Trash.
-
-`insert_after_heading` adds content next to a heading instead of at the end: `position="after"`
-(default) puts it under the heading named, `"before"` above it. The anchor must be a heading that
-is not a collapsible section's title. As with `append_to_note`, the caller sends only the new
-content, and the bytes already in the note pass through the rebuild unchanged.
-
-Which tool to reach for, by note:
-
-- A small note without collapsible sections: `replace_note` or `insert_after_heading` over MCP.
-- A note that holds collapsible sections: `make_section` or `append_to_note` over MCP, or
-  `insert_after_heading` for a mid-note insertion; the gate covers all three rebuilds. Avoid a
-  full-body `replace_note` - the fewer bytes re-parsed, the less UpNote's re-parser can drop.
-- A large note (over 20,000 characters): edit through a direct import of `server.py` regardless
-  of tool; MCP refuses bodies over 30,000 characters, and 20-30KB passes the size check but still
-  round-trips the whole body. See [Editing very large notes](#editing-very-large-notes).
-
-The existing HTML goes first, then a blank line, then the new Markdown. The blank line makes
-UpNote convert what follows as Markdown. If the note ends with a list and the new text starts
-with one, UpNote joins them into one list. Tag links are moved below the new content, so a
-note's tags stay at its end however often it's appended to. A hashtag inside a sentence stays
-where it is.
-
-Every rebuild, by `replace_note`, `append_to_note` or `make_section`, first removes line breaks
-between block tags. A browser ignores them, but UpNote's create link turns each one into an empty
-`<div>`, so a note would collect them with every rebuild. A line break between inline tags, such
-as `</b>` and `<i>`, shows as a space and is kept; UpNote keeps it too (2026-10-10, UpNote 9.22.6).
-
-## Editing very large notes
-
-MCP clients can cut tool inputs of this size, so the tools refuse a body over 30,000 characters.
-To edit such a note, import `server.py` directly and call the tool function with `server_only=True`.
-Keep the two-step flow: preview first, then apply with the revision and token the preview returned.
-
-```python
-import importlib.util
-spec = importlib.util.spec_from_file_location("upnote_server", "/path/to/server.py")
-srv = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(srv)
-
-p = srv.replace_note(note_id="...", text=new_text, server_only=True)   # preview, changes nothing
-# read p["warnings"] and p["structure"], then apply:
-srv.replace_note(note_id="...", text=new_text, server_only=True,
-                 expected_revision=p["revision"], preview_token=p["preview_token"],
-                 acknowledge_warnings=bool(p["warnings"]))
-```
-
-Run it with the server's venv Python. The same checks apply as over MCP, including the
-collapsible-section gate. Edit a note that holds sections by hand in UpNote when the gate refuses.
-
-## Nested sections
-
-UpNote's editor can't put a collapsible section inside another one, but it renders and syncs them
-correctly, and keeps them when you edit the note by hand. `make_section` builds them: name a heading
-inside an existing section, and the heading with the content under it becomes a section nested there.
-The section holds everything to the next heading of the same or higher level, or to the end of its
-container, and `collapsed=true` makes it start closed.
-
-Content marked off by hand works too: pass `until` with the text of an end marker, and the section runs
-from the heading to that marker, both markers being removed. `title` names the section when the heading
-itself is only a marker.
-
-It previews first, the same as `replace_note`, and rebuilds the note the same way, so the result has a
-new id. Everything outside the wrapped range is copied through unchanged, apart from the line breaks
-between block tags that every rebuild removes. It refuses a heading it
-can't find, one that appears twice, one that is already a section's title, one with nothing under it,
-an `until` marker it can't find after the heading, and any note whose own title heading holds extra
-content, since rebuilding that would duplicate it.
+If a step fails, the original stays in place and the result says so. `append_to_note` takes only the
+new content, so Claude never resends a long note. A body over 30,000 characters is refused through
+MCP. Notes with collapsible sections have an extra gate against UpNote's re-parser dropping them.
+Full rules, warnings and recipes are in [docs/EDITING.md](docs/EDITING.md).
 
 ## Limits and known issues
 
@@ -405,7 +258,7 @@ content, since rebuilding that would duplicate it.
   without Full Disk Access, and granting it to Claude is not enough: the Claude desktop app
   starts MCP servers as their own responsible process, so macOS checks the binary in `command`.
   The desktop app may serve the tools even in a Claude Code session, so fix its config too.
-  Check that the launcher from [Install](#install) has Full Disk Access.
+  Check that the launcher from [Install](#install) (`install.sh` builds it) has Full Disk Access.
 - **Still blocked with Full Disk Access granted.** Look in System Settings, Privacy & Security,
   Files & Folders, for an entry whose "access data from UpNote" is switched off, often greyed out.
   `tccutil reset SystemPolicyAppData` clears those, and then Claude needs a restart: a server
@@ -437,104 +290,12 @@ Rebuilding the launcher changes its signature, so grant it again after a rebuild
 Full Disk Access, add it back, and restart Claude. It runs whatever `server.py` holds, so the
 grant extends to any edit of that file.
 
-## Test
+## More
 
-The tests run on the server's venv. `test_make_section.py` checks the section-building logic,
-and the HTML clean-up `append_to_note` does, against synthetic note markup,
-`test_nested_lists.py` checks the nested-list rewrite, and `test_structure_gate.py` checks the
-collapsible-section counts and the replace gate's decisions. None touches UpNote or your notes.
-Run each test from this folder:
+- [docs/EDITING.md](docs/EDITING.md): replace, append, move, nested sections, very large notes.
+- [docs/DESIGN.md](docs/DESIGN.md): how changes are made and cleaned, shared operation state, opening notes.
+- [docs/TESTING.md](docs/TESTING.md): the test suites and how to run them.
 
-```bash
-~/.claude/mcp-servers/upnote-mcp-venv/bin/python test_make_section.py
-~/.claude/mcp-servers/upnote-mcp-venv/bin/python test_nested_lists.py
-~/.claude/mcp-servers/upnote-mcp-venv/bin/python test_structure_gate.py
-```
+## License
 
-`test_readonly.py` compares every read tool except `open_in_upnote`, which changes what the app
-shows, with direct queries on your own library: filters, sorting, paging and counts. It also
-confirms that `run_select` refuses writes, and that the rebuild tools refuse a stale revision, an
-unknown tag, an empty append and a move to the same notebook, all before anything is sent. It
-then runs a rebuild of every eligible note against a stand-in for UpNote, with no link sent: an
-append, a `replace_note` given the note's own HTML, and the removal of a tag. Each one has to
-pass the checks the server makes before it trashes the original. It changes no note, but it
-writes pending journals to the server's operation state (see Shared operation state). In the
-default folder, a journal it leaves blocks the next run, and the live server, for that note for
-5 minutes. Give it a private folder of its own:
-
-```bash
-UPNOTE_MCP_STATE_DIR=$(mktemp -d) ~/.claude/mcp-servers/upnote-mcp-venv/bin/python test_readonly.py
-```
-
-`test_live.py` checks the tools that change notes: create, append, `make_section`, replace with
-a tag removed, move, trash and restore. It works on notes it creates, titled "ZZ live test" with
-the time, and checks after each step what UpNote stored: tags kept and last, no empty bullets or
-empty `<div>`s, the existing content unchanged, and a fenced code example intact. It also checks
-that a stale revision and unaccepted warnings are refused. At the end it moves every note it
-created to Trash, where they stay, synced to your other devices, until you empty Trash. The moved
-note briefly sits in one of your notebooks and stays listed there in Trash. It needs UpNote
-running, takes about ten seconds, and only runs with `--live`. Run it after an UpNote update:
-
-```bash
-~/.claude/mcp-servers/upnote-mcp-venv/bin/python test_live.py --live
-```
-
-
-## Shared operation state
-
-Rebuild/trash operations serialize per original note with a cross-process lock. A
-private pending marker is journaled before dispatch, so another process or a restarted
-server checks for the same in-flight copy before requesting another. Journals contain
-only a marker and timestamp, not note content.
-
-Default state is `.local/state/upnote-mcp` under the OS account home, independent of a
-client profile's `HOME`. An explicit `UPNOTE_MCP_STATE_DIR` override must be the same
-for every client operating on the same database. The directory must be owned by the
-user and private (0700); pending files and lock files are private (0600). Fixtures use
-isolated state. All affected MCP processes must use this version before concurrent
-writes are enabled; older processes ignore these locks.
-
-The pending window is five minutes, and `create_note` is not idempotent.
-Never blindly retry an uncertain create or apply: read the original and any new copy
-first. These checks coordinate requests; they do not make UpNote's URL interface a
-transaction or eliminate app-side failures.
-
-## Opening notes after restore
-
-UpNote can leave the editor blank when an `openNote` link targets a restored note.
-The server opens its containing notebook first, then opens the note. For an
-unfiled note it resets to All Notes; for a trashed note it resets to Trash. The
-notebook path was visually verified with disposable notes through Claude and Codex
-CLI and desktop clients. The unfiled and Trash reset branches have synthetic test
-coverage, rather than live visual acceptance.
-
-The tool returns `sent=true` only for successful URL dispatch. It cannot verify
-what the editor displays. An active app search can still constrain navigation. These links change the
-visible view and foreground app, so use the tool when the user asks to see content.
-
-### Synthetic protocol and navigation tests
-
-From the repository root, with Python 3.12+ and `mcp==2.2.0` installed:
-
-```bash
-python -m unittest discover -s tests/upnote -p 'test_*.py' -v
-```
-
-The suite creates isolated synthetic SQLite data and intercepts every app URL. It
-checks the eight non-read tool paths, previews and invalid applies without side
-effects, cross-process contention, pending state across restart, ambiguous dispatch,
-corrupt journals, literal-backslash warnings, the collapsible-section gate (a
-flatten-simulating app mode is refused and the original kept) and the MCP size
-guard, and note navigation/error handling.
-It does not launch UpNote or read/write your notes. Successful fake-app tests do not
-prove compatibility with every UpNote build or editor state.
-
-`UPNOTE_TEST_SERVER` can select a different server file. `UPNOTE_TEST_OUT` can retain
-fixtures for debugging; its path must contain a directory named
-`upnote-write-validation`. Without overrides, the suite uses this checkout's server
-and a temporary directory. Existing formatting checks remain available:
-
-```bash
-python test_make_section.py
-python test_nested_lists.py
-```
+MIT. See [LICENSE](LICENSE).

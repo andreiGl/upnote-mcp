@@ -1519,7 +1519,7 @@ _LARGE_BODY_MESSAGE = (
     "through some MCP clients cut, which has written a truncated note. Call server.py directly instead: "
     "import it with importlib (spec_from_file_location on this server.py, markdown=True), then call "
     "replace_note with server_only=True and the same two-step preview and apply. The recipe is in "
-    "the README, section 'Editing very large notes'."
+    "docs/EDITING.md, section 'Editing very large notes'."
 )
 
 
