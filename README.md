@@ -1,7 +1,7 @@
 # UpNote MCP server
 
 An MCP server that connects Claude Code, Claude Desktop and Codex to the [UpNote](https://getupnote.com)
-desktop app on macOS. Both clients can search and read your notes, create formatted and tagged notes,
+desktop app on macOS. With it, Claude and Codex can search and read your notes, create formatted and tagged notes,
 edit a note, add to its end, move it to another notebook, turn a heading into a collapsible
 section, change its tags, move notes to Trash and back, and open notes in the app.
 
@@ -21,11 +21,11 @@ by hand.
 
 ## Install
 
-The launcher uses `~/.claude/mcp-servers/upnote-mcp/server.py` for both clients.
+The launcher uses `~/.claude/mcp-servers/upnote-mcp/server.py` for every client.
 For a fresh install, put a versioned copy of this folder outside your working checkout,
 then create a symlink at `~/.claude/mcp-servers/upnote-mcp` pointing to that copy.
 Create the parent directory first, and leave any existing installation intact until you
-have recorded its target and validated the replacement with both clients. Direct links
+have recorded its target and validated the replacement with every client. Direct links
 to a working checkout are useful for development but pick up every edit and pull.
 
 For an existing installation, keep its launcher, signing identity and venv. A Python-only
@@ -229,8 +229,7 @@ characters, or was edited in the last ten minutes.
 
 A body over 30,000 characters is refused through MCP: some clients pass such inputs cut, and a
 cut body has written a truncated note. Edit large notes through a direct import of `server.py`
-instead, passing `server_only=True` to skip this check - see `reference_upnote_large_note_edits.md`
-in the project memory folder for the recipe.
+instead, passing `server_only=True` to skip this check - see [Editing very large notes](#editing-very-large-notes).
 
 When the replacement is confirmed, the server compares the collapsible-section counts of the body
 it sent with the copy UpNote saved. UpNote's re-parser has dropped the section wrappers of large
@@ -308,8 +307,7 @@ Which tool to reach for, by note:
   full-body `replace_note` - the fewer bytes re-parsed, the less UpNote's re-parser can drop.
 - A large note (over 20,000 characters): edit through a direct import of `server.py` regardless
   of tool; MCP refuses bodies over 30,000 characters, and 20-30KB passes the size check but still
-  round-trips the whole body. The recipe is `reference_upnote_large_note_edits.md` in the project
-  memory folder.
+  round-trips the whole body. See [Editing very large notes](#editing-very-large-notes).
 
 The existing HTML goes first, then a blank line, then the new Markdown. The blank line makes
 UpNote convert what follows as Markdown. If the note ends with a list and the new text starts
@@ -321,6 +319,28 @@ Every rebuild, by `replace_note`, `append_to_note` or `make_section`, first remo
 between block tags. A browser ignores them, but UpNote's create link turns each one into an empty
 `<div>`, so a note would collect them with every rebuild. A line break between inline tags, such
 as `</b>` and `<i>`, shows as a space and is kept; UpNote keeps it too (2026-10-10, UpNote 9.22.6).
+
+## Editing very large notes
+
+MCP clients can cut tool inputs of this size, so the tools refuse a body over 30,000 characters.
+To edit such a note, import `server.py` directly and call the tool function with `server_only=True`.
+Keep the two-step flow: preview first, then apply with the revision and token the preview returned.
+
+```python
+import importlib.util
+spec = importlib.util.spec_from_file_location("upnote_server", "/path/to/server.py")
+srv = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(srv)
+
+p = srv.replace_note(note_id="...", text=new_text, server_only=True)   # preview, changes nothing
+# read p["warnings"] and p["structure"], then apply:
+srv.replace_note(note_id="...", text=new_text, server_only=True,
+                 expected_revision=p["revision"], preview_token=p["preview_token"],
+                 acknowledge_warnings=bool(p["warnings"]))
+```
+
+Run it with the server's venv Python. The same checks apply as over MCP, including the
+collapsible-section gate. Edit a note that holds sections by hand in UpNote when the gate refuses.
 
 ## Nested sections
 
@@ -341,12 +361,12 @@ can't find, one that appears twice, one that is already a section's title, one w
 an `until` marker it can't find after the heading, and any note whose own title heading holds extra
 content, since rebuilding that would duplicate it.
 
-## Limits
+## Limits and known issues
 
 - macOS only, and by default only the App Store build's database location.
 - `test_live.py --live` stays on hold: its move step rebuilds a note through a create link that
   names a notebook, the exact action behind the 2026-10-11 membership wipe, which UpNote has not
-  fixed. Run it only with Andrei's say-so.
+  fixed. Run it only against a library you can restore from a backup.
 - What makes UpNote's re-parser drop collapsible-section wrappers is unknown - a 59KB note
   flattened on 2026-11-09 and a 60KB note rebuilt cleanly the same day, so it is not size alone.
   A targeted experiment (a scratch note, one nested wrapper, growing sizes) would answer it; the
@@ -465,8 +485,7 @@ running, takes about ten seconds, and only runs with `--live`. Run it after an U
 Rebuild/trash operations serialize per original note with a cross-process lock. A
 private pending marker is journaled before dispatch, so another process or a restarted
 server checks for the same in-flight copy before requesting another. Journals contain
-only a marker and timestamp, not note content. This also fixes an undefined-variable
-error in preview warning generation; all public tool arguments are unchanged.
+only a marker and timestamp, not note content.
 
 Default state is `.local/state/upnote-mcp` under the OS account home, independent of a
 client profile's `HOME`. An explicit `UPNOTE_MCP_STATE_DIR` override must be the same
@@ -475,7 +494,7 @@ user and private (0700); pending files and lock files are private (0600). Fixtur
 isolated state. All affected MCP processes must use this version before concurrent
 writes are enabled; older processes ignore these locks.
 
-The existing five-minute pending window remains, and `create_note` is not idempotent.
+The pending window is five minutes, and `create_note` is not idempotent.
 Never blindly retry an uncertain create or apply: read the original and any new copy
 first. These checks coordinate requests; they do not make UpNote's URL interface a
 transaction or eliminate app-side failures.
@@ -483,15 +502,14 @@ transaction or eliminate app-side failures.
 ## Opening notes after restore
 
 UpNote can leave the editor blank when an `openNote` link targets a restored note.
-The server now opens its containing notebook first, then opens the note. For an
+The server opens its containing notebook first, then opens the note. For an
 unfiled note it resets to All Notes; for a trashed note it resets to Trash. The
 notebook path was visually verified with disposable notes through Claude and Codex
 CLI and desktop clients. The unfiled and Trash reset branches have synthetic test
 coverage, rather than live visual acceptance.
 
-The tool still returns `sent=true` only for successful URL dispatch. It cannot verify
-what the editor displays. Notebook, tag and search modes retain their existing
-behavior; active app searches can still constrain navigation. These links change the
+The tool returns `sent=true` only for successful URL dispatch. It cannot verify
+what the editor displays. An active app search can still constrain navigation. These links change the
 visible view and foreground app, so use the tool when the user asks to see content.
 
 ### Synthetic protocol and navigation tests
