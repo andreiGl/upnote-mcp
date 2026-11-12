@@ -44,12 +44,12 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-DB_PATH = Path(
-    os.environ.get(
-        "UPNOTE_DB",
-        "~/Library/Containers/com.getupnote.desktop/Data/Library/Application Support/UpNote/upnote.sqlite3",
-    )
-).expanduser()
+if sys.platform == "win32":
+    _DEFAULT_DB = os.path.expandvars(r"%APPDATA%\UpNote\upnote.sqlite3")
+else:
+    _DEFAULT_DB = "~/Library/Containers/com.getupnote.desktop/Data/Library/Application Support/UpNote/upnote.sqlite3"
+
+DB_PATH = Path(os.environ.get("UPNOTE_DB", _DEFAULT_DB)).expanduser()
 
 # How long a tool that changes notes waits for UpNote to save the change, its notebook and its tags.
 CONFIRM_SECONDS = 10.0
@@ -934,9 +934,14 @@ def _create_url(title: str, text: str, notebook_title: str | None, markdown: boo
 def _open_link(url: str, background: bool = True) -> None:
     """Hand an upnote:// link to the app without a shell, in the background unless asked otherwise."""
     try:
-        # By absolute path: the server runs with the launcher's Full Disk Access, and PATH can hold
-        # folders any program of this user can write to.
-        subprocess.run(["/usr/bin/open", *(["-g"] if background else []), url], check=True, capture_output=True, timeout=15)
+        if sys.platform == "win32":
+            # os.startfile hands the URL to the registered handler directly. Windows has no
+            # documented way to start a URL-hidden app, so the background flag is Windows-ignored.
+            os.startfile(url)  # noqa: S606 - the URL is percent-encoded by _create_url
+        else:
+            # By absolute path: the server runs with the launcher's Full Disk Access, and PATH can
+            # hold folders any program of this user can write to.
+            subprocess.run(["/usr/bin/open", *(["-g"] if background else []), url], check=True, capture_output=True, timeout=15)
     except subprocess.TimeoutExpired as e:
         raise ToolError(
             "Handing the link to UpNote timed out, but UpNote may still have received it. Check whether the "
@@ -1273,11 +1278,16 @@ _OPERATION_ACTIVE = threading.local()
 
 
 def _operation_path(note_id: str, suffix: str) -> Path:
-    root = Path(os.environ.get("UPNOTE_MCP_STATE_DIR", str(
-        Path(pwd.getpwuid(os.getuid()).pw_dir) / ".local/state/upnote-mcp"))).expanduser()
+    if sys.platform == "win32":
+        default_root = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData/Local"))) / "upnote-mcp"
+    else:
+        default_root = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".local/state/upnote-mcp"
+    root = Path(os.environ.get("UPNOTE_MCP_STATE_DIR", str(default_root))).expanduser()
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     info = root.lstat()
-    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+    if not stat.S_ISDIR(info.st_mode):
+        raise ToolError("UpNote operation-state directory must be a directory.")
+    if sys.platform != "win32" and (info.st_uid != os.getuid() or info.st_mode & 0o077):
         raise ToolError("UpNote operation-state directory must be a private directory owned by this user.")
     key = hashlib.sha256((str(DB_PATH.resolve()) + "\0" + note_id.strip()).encode()).hexdigest()
     return root / (key + suffix)
@@ -1293,6 +1303,24 @@ def _note_operation(note_id: str):
         active = getattr(_OPERATION_ACTIVE, "keys", set())
         if key in active:  # _replace calls _set_trashed while holding this lock
             yield
+            return
+        if sys.platform == "win32":
+            fd = os.open(path, os.O_CREAT | os.O_RDWR)
+            try:
+                import msvcrt
+                try:
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                except OSError:
+                    raise ToolError("Another operation for this note is running. Wait for its result, then read the latest note before retrying.") from None
+                _OPERATION_ACTIVE.keys = active | {key}
+                try:
+                    yield
+                finally:
+                    _OPERATION_ACTIVE.keys = active
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            finally:
+                os.close(fd)
             return
         fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
         try:

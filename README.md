@@ -16,11 +16,12 @@ It works with Claude Code, Claude Desktop and Codex. It has sixteen tools: searc
 edit, append, insert under a heading, move to another notebook, make a collapsible section,
 change tags, move to Trash and back, and open a note in the app.
 
-> **Unofficial and macOS only.** UpNote has no editing API, so this server depends on the
+> **Unofficial.** UpNote has no editing API, so this server depends on the
 > app's local data format and two undocumented links (trash and restore). It was built against
 > UpNote 9.22.2 to 9.22.6 (data version 17) and the author runs it on 9.22.9. An UpNote update
 > can break it. The server checks the database format on every connection and fails with a
-> clear message instead of returning wrong results.
+> clear message instead of returning wrong results. macOS is the tested platform; Windows
+> support is new and untested on a real machine (see Requirements).
 
 ## Safety and known risks
 
@@ -53,6 +54,26 @@ change tags, move to Trash and back, and open a note in the app.
   from the Xcode Command Line Tools (`xcode-select --install`) to build the launcher.
   [Full Disk Access](#full-disk-access) explains why the server runs this way.
 - UpNote running, for any tool that changes a note or opens the app.
+
+### Windows
+
+Windows support is new and untested on a real Windows machine - treat it as a preview. The
+server reads `%APPDATA%\UpNote\upnote.sqlite3` (UpNote's Windows data folder; set `UPNOTE_DB`
+if your install keeps it elsewhere). Operation state goes to
+`%LOCALAPPDATA%\upnote-mcp`. No Full Disk Access and no launcher are needed: the database
+sits in your own profile, so plain Python can read it. Install:
+
+```powershell
+git clone https://github.com/andreiGl/upnote-mcp
+python -m venv upnote-mcp-venv
+upnote-mcp-venv\Scripts\pip install "mcp==2.2.0"
+upnote-mcp-venv\Scripts\python -I upnote-mcp\server.py
+```
+
+Register that command with your client. Links to UpNote go through the OS URL handler, so
+UpNote must be running, and they open the app visibly (Windows has no background-start
+equivalent of macOS `open -g`). If the notes tools report a missing database, check the
+actual location of `upnote.sqlite3` in your install and set `UPNOTE_DB`.
 
 ## Install
 
@@ -216,7 +237,11 @@ Full rules, warnings and recipes are in [docs/EDITING.md](docs/EDITING.md).
 
 ## Limits and known issues
 
-- macOS only, and by default only the App Store build's database location.
+- macOS is the tested platform. Windows reads and writes are wired up but have not run on a
+  real Windows machine; the Windows database path is a best guess from UpNote's documentation
+  and may differ by install type.
+- The macOS database path defaults to the Mac App Store build's container location only;
+  Windows defaults to `%APPDATA%\UpNote\upnote.sqlite3`. Set `UPNOTE_DB` for anything else.
 - `test_live.py --live` stays on hold: its move step rebuilds a note through a create link that
   names a notebook, the exact action behind the 2026-10-11 membership wipe, which UpNote has not
   fixed. Run it only against a library you can restore from a backup.
