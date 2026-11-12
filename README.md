@@ -517,6 +517,6 @@ fixtures for debugging; its path must contain a directory named
 and a temporary directory. Existing formatting checks remain available:
 
 ```bash
-python mcp-servers/upnote-mcp/test_make_section.py
-python mcp-servers/upnote-mcp/test_nested_lists.py
+python test_make_section.py
+python test_nested_lists.py
 ```
