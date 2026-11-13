@@ -132,6 +132,25 @@ enabled_tools = ["search_notes", "list_notes", "get_note", "list_notebooks", "li
 These are the server's sixteen tools. Keep the client's normal approval policy; no blanket
 automatic approval is needed.
 
+### Other clients
+
+The server is a standard MCP stdio process, so any client that can launch a local process on
+this Mac can use it. Only the three clients above are tested. Others that support local stdio
+servers and are expected to work, untested:
+
+- **Copilot** (VS Code and JetBrains): add the launcher as a stdio server in the MCP
+  configuration and use Copilot Chat in Agent mode. Copilot Business or Enterprise may need the
+  "MCP servers in Copilot" policy enabled.
+- **Gemini CLI**: `gemini mcp add upnote -- ~/.claude/mcp-servers/upnote-mcp-launcher`. Keep
+  `trust` off so tool calls stay confirmed.
+- **Grok CLI**: add the launcher under `[mcp_servers]` in `~/.grok/config.toml`.
+- **Perplexity Mac app**: supports local stdio servers through its XPC helper.
+
+Web and mobile clients can't use this server: it reads the database file and opens links on
+the machine where UpNote runs, and they can launch neither. The consumer Muse app takes
+connectors only through its reviewed directory; Muse Code supports local stdio servers like
+the rest.
+
 ### Manual install
 
 The script runs these steps:
