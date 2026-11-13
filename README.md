@@ -61,19 +61,10 @@ Windows support is new and untested on a real Windows machine - treat it as a pr
 server reads `%APPDATA%\UpNote\upnote.sqlite3` (UpNote's Windows data folder; set `UPNOTE_DB`
 if your install keeps it elsewhere). Operation state goes to
 `%LOCALAPPDATA%\upnote-mcp`. No Full Disk Access and no launcher are needed: the database
-sits in your own profile, so plain Python can read it. Install:
-
-```powershell
-git clone https://github.com/andreiGl/upnote-mcp
-python -m venv upnote-mcp-venv
-upnote-mcp-venv\Scripts\pip install "mcp==2.2.0"
-upnote-mcp-venv\Scripts\python -I upnote-mcp\server.py
-```
-
-Register that command with your client. Links to UpNote go through the OS URL handler, so
-UpNote must be running, and they open the app visibly (Windows has no background-start
-equivalent of macOS `open -g`). If the notes tools report a missing database, check the
-actual location of `upnote.sqlite3` in your install and set `UPNOTE_DB`.
+sits in your own profile, so plain Python can read it. Installation steps are under
+[Install](#windows-install). Links to UpNote go through the OS URL handler, so UpNote must be
+running, and they open the app visibly (Windows has no background-start equivalent of macOS
+`open -g`).
 
 ## Install
 
@@ -90,6 +81,29 @@ next steps, which are:
    Access, press `+`, then `Cmd+Shift+G` and paste `~/.claude/mcp-servers/upnote-mcp-launcher`.
 2. Register the launcher with your client.
 3. Restart the client and ask Claude to run `check_upnote_setup`.
+
+### Windows install
+
+```powershell
+git clone https://github.com/andreiGl/upnote-mcp
+cd upnote-mcp
+python -m venv venv
+venv\Scripts\pip install "mcp==2.2.0"
+```
+
+No launcher and no special permissions: the database sits in your own profile, so a plain
+Python process can read it. Register the server with your client as a stdio command. Claude
+Code:
+
+```powershell
+claude mcp add --scope user upnote -- venv\Scripts\python -I server.py
+```
+
+For other clients, the command is the same shape: `venv\Scripts\python -I server.py` from the
+checkout folder. If the tools report a missing database, find `upnote.sqlite3` in your UpNote
+install and set `UPNOTE_DB` to its full path - either in the client's `env` block for the
+server or system-wide. See [Windows](#windows) for the caveats: this port is new and has not
+run on a real Windows machine yet.
 
 ### Register with a client
 
