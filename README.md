@@ -33,15 +33,17 @@ change tags, move to Trash and back, and open a note in the app.
 - **An edit makes a new note.** UpNote cannot change a note in place. An edit creates a
   checked new version and then moves the original to Trash, where `restore_note` can bring it
   back. The new note gets a new id and creation date. Version History stays with the original,
-  and pin and bookmark must be set again by hand. Every edit shows a preview with warnings first.
-  The tools refuse notes that have attachments or images, links from other notes, a web share link,
-  or a template.
+  and pin and bookmark must be set again by hand. Every edit shows a preview with warnings first,
+  and the word and line checks count duplicates, so a dropped repeated block is caught.
+  The tools refuse notes that have attachments or images, links from other notes, a link to
+  themselves, a web share link, or a template.
 - **Nothing is deleted for good.** No tool empties Trash.
 - **UpNote once emptied a notebook's membership list.** On 2026-10-11 a note created in a
   notebook of 351 left it holding 1 (UpNote 9.22.6, once, during its daily backup and re-sync).
   The notes stayed intact. The server cannot prevent this, but it checks the notebook before and
-  after each change and reports a loss. UpNote's daily backup is the way back. See
-  [Limits and known issues](#limits-and-known-issues).
+  after each change and reports a loss, and it keeps a snapshot of the notebook lists in its
+  state directory (the last 3) so a wipe is repairable without waiting for UpNote's daily
+  backup. See [Limits and known issues](#limits-and-known-issues).
 - **Full Disk Access.** macOS needs it to read UpNote's data. You grant it to a small launcher
   that runs only this server. See [Full Disk Access](#full-disk-access) for what that allows.
 
