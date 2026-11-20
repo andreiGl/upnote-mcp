@@ -14,7 +14,8 @@ preview warns if it is empty, keeps fewer than half of the original's lines, or 
 would be removed as unsafe.
 
 The preview refuses when something would be lost for good: attachments or images, links from
-other notes, a web share link, or a template. It also refuses a note already in Trash, and one in
+other notes, a link to the note itself (in the stored body or in the new text), a web share
+link, or a template. It also refuses a note already in Trash, and one in
 a notebook whose title another notebook shares. It warns, and the replacement needs those
 warnings accepted, when the note is pinned or bookmarked, sits in more than one
 notebook, has been saved 20 or more times, has collapsible sections or a body over 20,000
