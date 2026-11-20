@@ -1431,6 +1431,8 @@ def _replace_checks(conn: sqlite3.Connection, note_id: str):
     ]
     if linking:
         blockers.append(f"Other notes link to it ({', '.join(repr(t) for t in linking[:5])}), and those links would lead to the trashed original.")
+    if f"openNote?noteId={note_id}" in body:
+        blockers.append("It links to itself, and that link would lead to the trashed original. Remove the self-link (or point it at the new version afterwards) and edit again.")
     if r["shared"] or r["shareId"]:
         blockers.append("It is shared by web link, and the link belongs to the original note.")
     if r["isTemplate"]:
@@ -1662,6 +1664,13 @@ def _replace(
 
     if blockers:
         raise ToolError(f"Can't replace {r['title']!r}. " + " ".join(blockers))
+    # The sent text may link to the note itself even when the stored body doesn't; catch it at
+    # preview so the caller sees it before the apply.
+    if text is not None and f"openNote?noteId={note_id}" in text:
+        raise ToolError(
+            "The new text links to this note itself, and after the edit that link would lead to the "
+            "trashed original. Remove the self-link (or point it at the new version afterwards) and edit again."
+        )
     if expected_revision is None:
         # The structure the caller sent, next to the note's current counts. The preview can't run
         # the rebuild's transforms, so sent counts are projected, not measured; the apply's gate
@@ -1714,6 +1723,14 @@ def _replace(
     # wrappers from large notes (11-09). The counts of what was sent gate the trash step below;
     # the transforms above leave them unchanged.
     sent_structure = _structure(body)
+    # A link to the note itself inside the SENT body would end up in the copy pointing at the
+    # trashed original. The stored-html case is blocked in _replace_checks; the sent-text case
+    # can only be caught here, where the final body exists.
+    if f"openNote?noteId={note_id}" in body:
+        raise ToolError(
+            "The new text links to this note itself, and after the edit that link would lead to the "
+            "trashed original. Remove the self-link (or point it at the new version afterwards) and edit again."
+        )
     notebook_title = nbs[target]["title"] if target else None
     notebook_path = nbs[target]["path"] if target else None
     expected_tags = {_tag_key(t) for t in tags}

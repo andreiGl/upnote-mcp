@@ -184,6 +184,18 @@ class Contract(unittest.TestCase):
         self.assertEqual(p['structure']['sent']['collapsible_sections'],2,p)
         self.assertEqual(p['structure']['sent']['section_placeholders'],4,p)
     @async_test
+    async def test_self_link_blocks_edit_outgoing_passes(self):
+        s=await self.client()
+        n=await self.create(s)
+        self_link=f'<a href="upnote://x-callback-url/openNote?noteId={n}">jump to me</a>'
+        before=self.event_count('create-request')
+        err,d,text=await self.call(s,'replace_note',note_id=n,text=self_link+'<div>content</div>',markdown=False,server_only=True)
+        self.assertTrue(err,text);self.assertIn('links to this note itself',text)
+        self.assertEqual(self.event_count('create-request'),before,'no app effect when a self-link would break')
+        out_link='<a href="upnote://x-callback-url/openNote?noteId=9999">other</a>'
+        err,p,text=await self.call(s,'replace_note',note_id=n,text=out_link+'<div>content</div>',markdown=False,server_only=True)
+        self.assertFalse(err,text);self.assertEqual(p['stage'],'preview')
+    @async_test
     async def test_oversized_body_refused_over_mcp(self):
         s=await self.client();n=await self.seeded_note(s)
         big='x'*(self.srv.MCP_TEXT_LIMIT+1)
