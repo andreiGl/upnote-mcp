@@ -961,6 +961,7 @@ def _find_created_note(marker: str, notebook_path: str | None = None) -> dict[st
     """
     deadline = time.monotonic() + CONFIRM_SECONDS
     found = None
+    interval = 0.1  # back off to 0.5s: UpNote usually saves within a second or two
     while True:
         with closing(_connect()) as conn:
             match = conn.execute(
@@ -974,7 +975,8 @@ def _find_created_note(marker: str, notebook_path: str | None = None) -> dict[st
                     return found
         if time.monotonic() >= deadline:
             return found
-        time.sleep(0.5)
+        time.sleep(interval)
+        interval = min(interval * 2, 0.5)
 
 
 @server.tool(annotations=CREATE)
@@ -987,10 +989,13 @@ def create_note(
         "its case; a new one is created. No spaces. They appear as hashtags at the end of the note."
     ))] = None,
     markdown: Annotated[bool, Field(description="The text is Markdown, raw HTML allowed. Leave true.")] = True,
+    server_only: Annotated[bool, Field(description="Direct server imports only: skips the MCP body-size limit. Never set this from an MCP client.")] = False,
 ) -> dict[str, Any]:
     """Create a new note in UpNote. The app creates it, so it syncs normally. Returns the new note's id once UpNote has saved it."""
     if not title.strip() and not text.strip():
         raise ToolError("Give a title or some text.")
+    if len(text) > MCP_TEXT_LIMIT and not server_only:
+        raise ToolError(_LARGE_BODY_MESSAGE.format(limit=MCP_TEXT_LIMIT, size=len(text)))
     wanted_tags = _clean_tag_names(tags or [])
     if wanted_tags:
         with closing(_connect()) as conn:
@@ -1017,6 +1022,8 @@ def create_note(
     marker = _new_marker()
     url = _create_url(title.strip(), text, notebook_title, markdown, marker)
     members_before = _notebook_members(notebook_id) if notebook_id is not None else []
+    if notebook_id is not None:
+        _snapshot_lists()
     _open_link(url)
 
     try:
@@ -1115,8 +1122,10 @@ def _set_trashed(note_id: str, trashed: bool) -> dict[str, Any]:
             r = conn.execute(f"SELECT {_NOTE_COLUMNS} FROM notes WHERE id = ? AND deleted = 0", (note_id,)).fetchone()
             if r is not None and bool(r["trashed"]) == trashed:
                 nbs = _notebooks(conn)
-                revision = conn.execute("SELECT revision FROM notes WHERE id = ?", (note_id,)).fetchone()["revision"]
-                return {"confirmed": True, "revision": revision, "note": _summary(r, nbs, _membership(conn, nbs), None)}
+                revision_row = conn.execute("SELECT revision FROM notes WHERE id = ?", (note_id,)).fetchone()
+                if revision_row is None:  # the row vanished between the two reads; keep polling
+                    continue
+                return {"confirmed": True, "revision": revision_row["revision"], "note": _summary(r, nbs, _membership(conn, nbs), None)}
         if time.monotonic() >= deadline:
             return {
                 "confirmed": False,
@@ -1349,6 +1358,45 @@ def _locked_note_operation(fn):
     return run
 
 
+_SNAPSHOTS_KEPT = 3
+_snapshot_taken = False  # once per process, before the first destructive op
+
+
+def _snapshot_lists() -> None:
+    """Copy the notebook-membership lists table to the state dir, once per process.
+
+    The notebook-wipe bug this server detects is only repairable from a backup of these
+    lists, and UpNote's own daily backup can be 24 hours stale. Note content needs no
+    snapshot: an edited original recovers from UpNote's Trash.
+    """
+    global _snapshot_taken
+    if _snapshot_taken:
+        return
+    _snapshot_taken = True
+    try:
+        root = _operation_path("snapshot", "").parent / "snapshots"
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with closing(_connect()) as conn:
+            lists = {row["id"]: _json_list(row["content"])
+                     for row in conn.execute("SELECT id, content FROM lists WHERE id LIKE 'notebooks\\_%' ESCAPE '\\'")}
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        path = root / f"lists-snapshot-{stamp}.json"
+        temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as stream:
+            json.dump({"taken": time.time(), "lists": lists}, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        snapshots = sorted(root.glob("lists-snapshot-*.json"))
+        for old in snapshots[:-_SNAPSHOTS_KEPT]:
+            old.unlink()
+    except (OSError, sqlite3.Error) as e:
+        # A failed snapshot must not block the edit: the gate and the wipe check still protect
+        # the note itself, and UpNote's daily backup remains the recovery source.
+        print(f"upnote-mcp: lists snapshot failed: {e}", file=sys.stderr)
+
+
 def _pending_get(note_id: str):
     path = _operation_path(note_id, ".json")
     if not path.exists():
@@ -1579,8 +1627,10 @@ def _visible_lines(text: str) -> list[str]:
     return lines
 
 
-def _words(text: str) -> set[str]:
-    return {w for w in re.findall(r"[^\W_]{3,}", _fold(text))}  # split on _, as UpNote's text keeps my_var whole
+def _words(text: str) -> collections.Counter:
+    # A Counter, not a set: dropping a duplicated block whose words all appear elsewhere would
+    # pass a set check, and the original would be trashed unannounced.
+    return collections.Counter(re.findall(r"[^\W_]{3,}", _fold(text)))  # split on _, as UpNote's text keeps my_var whole
 
 
 @_locked_note_operation
@@ -1652,13 +1702,16 @@ def _replace(
 
     if text is not None and keep_lines is None:
         # The new body is the caller's; say what it drops, so a short or empty text isn't a surprise.
-        old = [x for x in _kept_lines(plain) if not _tag_line(x, tags + removed)]
-        new = set(_visible_lines(text))
-        kept = sum(1 for x in old if _line_key(x) in new)
+        # Counted, not set: a dropped duplicated line must count as dropped even when an identical
+        # line survives elsewhere.
+        old = collections.Counter(_line_key(x) for x in _kept_lines(plain) if not _tag_line(x, tags + removed))
+        new = collections.Counter(_line_key(x) for x in _visible_lines(text))
+        lost = old - new
+        kept = sum(old.values()) - sum(lost.values())
         if not text.strip() and old:
-            warnings.append(f"The new text is empty: the note's {len(old)} lines would be replaced by nothing.")
-        elif old and kept < len(old) / 2:
-            warnings.append(f"The new text keeps only {kept} of the original's {len(old)} lines. Check nothing is lost.")
+            warnings.append(f"The new text is empty: the note's {sum(old.values())} lines would be replaced by nothing.")
+        elif old and kept < sum(old.values()) / 2:
+            warnings.append(f"The new text keeps only {kept} of the original's {sum(old.values())} lines. Check nothing is lost.")
         if removed_unsafe := _sanitize_report(text)[1]:
             warnings.append(f"Would be removed as unsafe: {', '.join(sorted(set(removed_unsafe)))}.")
 
@@ -1800,10 +1853,24 @@ def _replace(
                 f"{CONFIRM_SECONDS:.0f} seconds, so the original was left in place. Ask the user to check the "
                 "new note's tags in UpNote, then move the one they don't want to Trash with move_note_to_trash."
             )
-        with closing(_connect()) as conn:
-            if not tags:
-                time.sleep(1.5)  # no tag to wait for, so give UpNote a moment to record any tag at all
-            row = conn.execute("SELECT text, tagLinks, html FROM notes WHERE id = ?", (new_note["id"],)).fetchone()
+        if not tags:
+            # No tag to wait for, so poll until the saved text settles (two identical reads) or
+            # the window passes - cheaper than a fixed sleep, and the check below reads the
+            # settled row either way.
+            deadline = time.monotonic() + 1.5
+            previous = None
+            while True:
+                with closing(_connect()) as conn:
+                    row = conn.execute("SELECT text, tagLinks, html FROM notes WHERE id = ?", (new_note["id"],)).fetchone()
+                if row is not None and row == previous:
+                    break
+                previous = row
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.2)
+        else:
+            with closing(_connect()) as conn:
+                row = conn.execute("SELECT text, tagLinks, html FROM notes WHERE id = ?", (new_note["id"],)).fetchone()
         if dropped := _structure_dropped(sent_structure, _structure((row["html"] if row else "") or "")):
             return kept_both(
                 f"The new version was created but UpNote dropped collapsible-section markup while saving it "
@@ -1818,6 +1885,8 @@ def _replace(
                 "Ask the user to remove them in UpNote, then move the note they don't want to Trash with move_note_to_trash."
             )
         new_text = (row["text"] if row else "") or ""
+        # Counter subtraction: a lost duplicated instance shows up here, which the old set check
+        # missed (its words all appeared elsewhere in the note).
         if missing := sorted(sent_words - _words(new_text)):
             return kept_both(
                 f"The new version lacks {len(missing)} word(s) of the text sent, such as {missing[0]!r}, so the "
@@ -1844,13 +1913,14 @@ def _replace(
                 "was left in place. Compare the two and move one to Trash with move_note_to_trash."
             )
         trashing = True
+        _snapshot_lists()
         trash = _set_trashed(note_id, True)
-    except (sqlite3.Error, ToolError) as e:
+    except Exception as e:  # an unexpected error must still report the new version's state
         if new_note is None:
             _pending_set(note_id, marker)
         where = ("The original may already be in Trash" if trashing else "The original was left in place")
         return kept_both(
-            f"Something failed after the new version was requested: {e} {where}"
+            f"Something failed after the new version was requested: {type(e).__name__}: {e} {where}"
             + (", and the new version exists" if new_note else ", and UpNote may still create the new version")
             + ". Don't call this tool again. Show the user both notes with get_note and move the one they don't "
             "want to Trash with move_note_to_trash."
