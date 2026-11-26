@@ -13,7 +13,8 @@ as it is, for a call that only changes tags, the title or the notebook. When `te
 preview warns if it is empty, keeps fewer than half of the original's lines, or holds markup that
 would be removed as unsafe.
 
-The preview refuses when something would be lost for good: attachments or images, links from
+The preview refuses when something would be lost for good: attachments or images, an embedded
+frame, video or audio, links from
 other notes, a link to the note itself (in the stored body or in the new text), a web share
 link, or a template. It also refuses a note already in Trash, and one in
 a notebook whose title another notebook shares. It warns, and the replacement needs those
@@ -22,7 +23,10 @@ notebook, has been saved 20 or more times, has collapsible sections or a body ov
 characters, or was edited in the last ten minutes.
 
 A body over 30,000 characters is refused through MCP: some clients pass such inputs cut, and a
-cut body has written a truncated note. Edit large notes through a direct import of `server.py`
+cut body has written a truncated note. The refusal is skipped when the call passes
+`server_only=True` - a parameter the tool schemas expose because a direct import of `server.py`
+needs it, so the guard relies on the model reading the parameter's description, which says never
+to set it from an MCP client. Edit large notes through a direct import of `server.py`
 instead, passing `server_only=True` to skip this check - see [Editing very large notes](#editing-very-large-notes).
 
 When the replacement is confirmed, the server compares the collapsible-section counts of the body
@@ -30,7 +34,11 @@ it sent with the copy UpNote saved. UpNote's re-parser has dropped the section w
 notes on re-parse (2026-11-09: a 59KB note lost 15 of 16 wrappers, progressively over three
 rebuilds). If any wrapper was lost, the original stays in place and the result is `done=false`
 naming what was dropped. The preview carries the counts in a `structure` object, `current` for the
-note as it is and `sent` for the body submitted, so a flatten shows before applying. A collapsed
+note as it is and `sent` for the body submitted, so a flatten shows before applying. For
+`replace_note` with new text and for `make_section`, `sent` is the projected after-edit count;
+for `append_to_note`, `move_note` and `insert_after_heading` the preview shows `sent` equal to
+`current` - the new fragment is not yet part of a submitted body - and the apply-time gate
+measures the real combined body. A collapsed
 section may legitimately come back expanded, so `collapsed_sections` never gates a write; prefer
 `make_section` or `append_to_note` for notes that hold sections, and hand edits in the UpNote app
 for anything else.
@@ -46,7 +54,9 @@ carried over: no link sets them (tested 2026-10-10; UpNote answers "This link is
 for routes such as `note/pin`), so the preview warns about them.
 
 The original goes to Trash only after the new version is confirmed: in its notebook, with exactly
-the expected tags, with every word of the text sent, and only if nobody changed the original in
+the expected tags, with every word of the text sent (words of one or two characters are not
+counted - they carry the comparison's noise), the title if the call set one, and only if nobody
+changed the original in
 the meantime. For the tools that keep the content, `append_to_note`, `move_note` and
 `make_section`, every line of the original's text must also be in the new version. If anything
 fails after the new version was requested, the tool says so, leaves the original in place and

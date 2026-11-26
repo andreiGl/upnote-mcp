@@ -11,9 +11,7 @@ UpNote app itself through its upnote://x-callback-url/note/new link, so they
 sync like notes typed by hand.
 """
 
-import fcntl
 import functools
-import pwd
 import stat
 import threading
 from contextlib import contextmanager
@@ -260,8 +258,8 @@ def _notebook_members(notebook_id: str) -> list[str]:
 
 # UpNote adds a linked note to its notebook by rebuilding the notebook's list from its in-memory copy,
 # `getListContents.get(id) || new Set()` (renderer.js, 9.22.6). When that copy is missing, the list is
-# written as the new note alone and synced to every device: on 2026-10-11 a note created in Ping
-# Identity left that notebook with 1 of its 351 members. The server can't prevent it, since it never
+# written as the new note alone and synced to every device: on 2026-10-11 a note created in a large
+# notebook left it holding 1 of its 351 members. The server can't prevent it, since it never
 # writes the database, so every link that adds a note to a notebook is checked for it.
 _LOST_MEMBERS = (
     "UpNote dropped {missing} of the {had} notes in {notebook!r} from that notebook while adding this one. This is a "
@@ -1290,6 +1288,7 @@ def _operation_path(note_id: str, suffix: str) -> Path:
     if sys.platform == "win32":
         default_root = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData/Local"))) / "upnote-mcp"
     else:
+        import pwd
         default_root = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".local/state/upnote-mcp"
     root = Path(os.environ.get("UPNOTE_MCP_STATE_DIR", str(default_root))).expanduser()
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -1336,6 +1335,7 @@ def _note_operation(note_id: str):
             info = os.fstat(fd)
             if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
                 raise ToolError("Unsafe UpNote operation lock; no app change was requested.")
+            import fcntl
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
@@ -1810,6 +1810,10 @@ def _replace(
             _pending_delete(note_id)
     marker = _new_marker()
     members_before = _notebook_members(target) if target else []
+    # The create link below can trigger UpNote's list-wipe bug, so the recovery snapshot must
+    # be taken before it, the same way create_note takes one before its link.
+    if target:
+        _snapshot_lists()
     _pending_set(note_id, marker)  # durable before dispatch, including ambiguous delivery/crash
     _open_link(_create_url(new_title, body, notebook_title, markdown, marker))
     new_note = None
@@ -1870,7 +1874,7 @@ def _replace(
                 time.sleep(0.2)
         else:
             with closing(_connect()) as conn:
-                row = conn.execute("SELECT text, tagLinks, html FROM notes WHERE id = ?", (new_note["id"],)).fetchone()
+                row = conn.execute("SELECT text, tagLinks, html, title FROM notes WHERE id = ?", (new_note["id"],)).fetchone()
         if dropped := _structure_dropped(sent_structure, _structure((row["html"] if row else "") or "")):
             return kept_both(
                 f"The new version was created but UpNote dropped collapsible-section markup while saving it "
@@ -1883,6 +1887,12 @@ def _replace(
             return kept_both(
                 f"The new version has tags it shouldn't: {', '.join(extra)}, so the original was left in place. "
                 "Ask the user to remove them in UpNote, then move the note they don't want to Trash with move_note_to_trash."
+            )
+        stored_title = ((row["title"] if row else "") or "").strip()
+        if new_title and stored_title and stored_title != new_title:
+            return kept_both(
+                f"The new version was saved with the title {stored_title!r} instead of {new_title!r}, so the original "
+                "was left in place. Compare the two, then move one to Trash with move_note_to_trash."
             )
         new_text = (row["text"] if row else "") or ""
         # Counter subtraction: a lost duplicated instance shows up here, which the old set check
@@ -1913,7 +1923,6 @@ def _replace(
                 "was left in place. Compare the two and move one to Trash with move_note_to_trash."
             )
         trashing = True
-        _snapshot_lists()
         trash = _set_trashed(note_id, True)
     except Exception as e:  # an unexpected error must still report the new version's state
         if new_note is None:

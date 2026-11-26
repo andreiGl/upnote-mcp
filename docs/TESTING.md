@@ -34,7 +34,12 @@ empty `<div>`s, the existing content unchanged, and a fenced code example intact
 that a stale revision and unaccepted warnings are refused. At the end it moves every note it
 created to Trash, where they stay, synced to your other devices, until you empty Trash. The moved
 note briefly sits in one of your notebooks and stays listed there in Trash. It needs UpNote
-running, takes about ten seconds, and only runs with `--live`. Run it after an UpNote update:
+running, takes about ten seconds, and only runs with `--live`.
+
+`--live` is on hold: the move step rebuilds a note through a create link that names a notebook,
+the exact action behind the 2026-10-11 membership wipe, which UpNote has not fixed. The server's
+wipe check and notebook-list snapshots cover the failure mode, but do not run this test until
+UpNote fixes the bug - see [README, Limits and known issues](../README.md#limits-and-known-issues).
 
 ```bash
 ~/.claude/mcp-servers/upnote-mcp-venv/bin/python test_live.py --live

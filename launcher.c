@@ -36,11 +36,11 @@
 
 extern char **environ;
 
-static pid_t child;
+static volatile sig_atomic_t child_pid;  /* sig_atomic_t == int == pid_t on this platform */
 
 static void forward(int sig) {
-    if (child > 0)
-        kill(child, sig);
+    if (child_pid > 0)
+        kill(child_pid, sig);
 }
 
 int main(void) {
@@ -54,20 +54,23 @@ int main(void) {
     snprintf(python, sizeof python, "%s%s", home, VENV_PYTHON);
     snprintf(script, sizeof script, "%s/.claude/mcp-servers/upnote-mcp/server.py", home);
 
+    /* Handlers go in before the spawn: a signal between spawn and registration would
+       take the default action and orphan the server. child_pid is 0 until the spawn
+       fills it, so an early delivery just finds nothing to forward to. */
+    signal(SIGTERM, forward);
+    signal(SIGINT, forward);
+    signal(SIGHUP, forward);
+
     /* -I: no PYTHON* variables, no user site-packages, so only the venv runs. */
     char *args[] = {python, "-I", script, NULL};
-    int err = posix_spawn(&child, python, NULL, NULL, args, environ);
+    int err = posix_spawn((pid_t *)&child_pid, python, NULL, NULL, args, environ);
     if (err) {
         fprintf(stderr, "upnote-mcp-launcher: cannot start %s: %s\n", python, strerror(err));
         return 1;
     }
 
-    signal(SIGTERM, forward);
-    signal(SIGINT, forward);
-    signal(SIGHUP, forward);
-
     int status;
-    while (waitpid(child, &status, 0) < 0) {
+    while (waitpid((pid_t)child_pid, &status, 0) < 0) {
         if (errno != EINTR) {  /* a signal interrupted the wait; anything else won't clear on retry */
             perror("upnote-mcp-launcher: waitpid");
             return 1;

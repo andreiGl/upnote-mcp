@@ -35,15 +35,20 @@ change tags, move to Trash and back, and open a note in the app.
   back. The new note gets a new id and creation date. Version History stays with the original,
   and pin and bookmark must be set again by hand. Every edit shows a preview with warnings first,
   and the word and line checks count duplicates, so a dropped repeated block is caught.
-  The tools refuse notes that have attachments or images, links from other notes, a link to
-  themselves, a web share link, or a template.
+  The tools refuse notes that have attachments or images, an embedded frame, video or audio,
+  links from other notes, a link to themselves, a web share link, or a template.
 - **Nothing is deleted for good.** No tool empties Trash.
 - **UpNote once emptied a notebook's membership list.** On 2026-10-11 a note created in a
   notebook of 351 left it holding 1 (UpNote 9.22.6, once, during its daily backup and re-sync).
   The notes stayed intact. The server cannot prevent this, but it checks the notebook before and
   after each change and reports a loss, and it keeps a snapshot of the notebook lists in its
   state directory (the last 3) so a wipe is repairable without waiting for UpNote's daily
-  backup. See [Limits and known issues](#limits-and-known-issues).
+  backup. The refusal names the lost note ids; the snapshots live in the state directory under
+  `snapshots/lists-snapshot-<timestamp>.json`, newest 3 kept, each `{"taken": <unix time>,
+  "lists": {"notebooks_<notebook id>": [<note id>, ...]}}`. To repair from one: quit UpNote on
+  every device, merge the missing ids into the notebook's row the same way UpNote's own daily
+  backup would be merged (the server's loss message describes the row format), then restart.
+  See [Limits and known issues](#limits-and-known-issues).
 - **Full Disk Access.** macOS needs it to read UpNote's data. You grant it to a small launcher
   that runs only this server. See [Full Disk Access](#full-disk-access) for what that allows.
 
@@ -305,7 +310,9 @@ UpNote cannot change a note in place, so `replace_note`, `append_to_note`, `inse
 
 If a step fails, the original stays in place and the result says so. `append_to_note` takes only the
 new content, so Claude never resends a long note. A body over 30,000 characters is refused through
-MCP. Notes with collapsible sections have an extra gate against UpNote's re-parser dropping them.
+MCP unless the call opts out with `server_only=True`, which exists for direct imports of
+`server.py` and which the tool descriptions tell models never to set from an MCP client. Notes with
+collapsible sections have an extra gate against UpNote's re-parser dropping them.
 Full rules, warnings and recipes are in [docs/EDITING.md](docs/EDITING.md).
 
 ## Limits and known issues

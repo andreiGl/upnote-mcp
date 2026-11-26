@@ -34,18 +34,28 @@ def load_server(source, db):
                     if released:break
                     if time.monotonic()>deadline:raise srv.ToolError('Synthetic hold timed out')
                     time.sleep(.02)
-            if mode=='barrier':
-                deadline=time.monotonic()+8
-                while True:
-                    with sqlite3.connect(db) as c:n=c.execute("SELECT count(*) FROM fake_events WHERE kind='create-request'").fetchone()[0]
-                    if n>=2:break
-                    if time.monotonic()>deadline:raise srv.ToolError('Synthetic barrier timed out')
-                    time.sleep(.02)
             body=q.get('text','');title=q.get('title','');nid=uuid.uuid4().hex;tags=[html.unescape(t).lstrip('#') for t in re.findall(r'data-upnote-tag="([^"]+)"',body)]
             if mode=='flatten-sections':
                 # Simulates UpNote's 11-09 re-parser failure: wrappers saved without their class.
                 body=re.sub(r'(?i)(<div class=")shine-collapsible-section([" >])',r'\1\2',body)
                 body=body.replace(' data-upnote-placeholder-key',' data-upnote-saved-placeholder-key')
+            elif mode=='drop-line':
+                # Simulates UpNote dropping one line of the body on save: exercises the
+                # keep-lines gate on append/move/make_section (which keep the original lines).
+                # Drops the short-word line (every word under 3 characters) when one exists,
+                # else the hardcoded fixture line - the word gate ignores sub-3-char words,
+                # so only the line check can catch this class of loss.
+                body, n = re.subn(r'<div>([a-zA-Z]{1,2}[ /]*)+</div>','',body)
+                if not n: body=body.replace('<div>Retain this content.</div>','')
+            elif mode=='drop-word':
+                # Simulates UpNote dropping one word of whatever body it saves: exercises the
+                # word gate, which compares the words of the sent text against the saved copy.
+                # Drops the first word of the first non-empty div, which every fixture body has.
+                body=re.sub(r'(<div[^>]*>)([^<]*)',lambda m:m.group(1)+m.group(2).split(' ',1)[1] if ' ' in (m.group(2) or '') else m.group(1)+m.group(2),body,count=1)
+            elif mode=='wipe-members':
+                # Simulates the 2026-10-11 list-wipe bug: the notebook list is rebuilt from
+                # an empty in-memory copy, so it ends up holding the new note alone.
+                body=body  # body is untouched; the wipe happens in the list write below
             class Plain(HTMLParser):
                 def __init__(self):super().__init__(convert_charrefs=True);self.parts=[]
                 def handle_data(self,data):self.parts.append(data)
@@ -62,7 +72,10 @@ def load_server(source, db):
                     if not c.execute('SELECT 1 FROM tags WHERE title=?',(tag,)).fetchone():c.execute('INSERT INTO tags(title,deleted) VALUES (?,0)',(tag,))
                 if q.get('notebook'):
                     rows=c.execute('SELECT id FROM notebooks WHERE title=? AND deleted=0',(q['notebook'],)).fetchall();assert len(rows)==1
-                    lid='notebooks_'+rows[0][0];row=c.execute('SELECT content FROM lists WHERE id=?',(lid,)).fetchone();members=json.loads(row[0]) if row else [];members.append(nid)
+                    lid='notebooks_'+rows[0][0];row=c.execute('SELECT content FROM lists WHERE id=?',(lid,)).fetchone()
+                    if mode=='wipe-members':members=[nid]  # the bug: in-memory copy missing, new note alone
+                    else:
+                        members=json.loads(row[0]) if row else [];members.append(nid)
                     c.execute('INSERT OR REPLACE INTO lists(id,content) VALUES (?,?)',(lid,json.dumps(members)))
             return
         if route in ['/note/moveToTrash','/note/restore']:

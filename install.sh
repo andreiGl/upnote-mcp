@@ -52,6 +52,11 @@ fi
 "$VENV/bin/python" -m pip install --quiet --disable-pip-version-check "mcp==$MCP_VERSION"
 
 # 3. Launcher
+# Rebuilding replaces the binary the Full Disk Access grant points at: after a re-run the
+# grant is gone and the server cannot read the database until it is granted again.
+if [ -x "$LAUNCHER" ]; then
+    echo "Rebuilding $LAUNCHER: its Full Disk Access grant stops applying. Re-grant it after this install (System Settings > Privacy & Security > Full Disk Access)."
+fi
 clang -O2 -o "$LAUNCHER" "$SELF/launcher.c"
 codesign -s - -i ca.glotov.upnote-mcp-launcher -f "$LAUNCHER"
 
@@ -63,6 +68,8 @@ Next steps:
   1. Grant Full Disk Access to the launcher (System Settings > Privacy & Security >
      Full Disk Access > +, then press Cmd+Shift+G and paste the path):
        $LAUNCHER
+     Skip this step only if the launcher was never rebuilt: a rebuilt launcher needs
+     the grant again even if an older copy had it.
   2. Register it with your client:
        claude mcp add --scope user upnote -- $LAUNCHER
        codex mcp add upnote -- $LAUNCHER

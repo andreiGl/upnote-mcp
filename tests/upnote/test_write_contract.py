@@ -232,4 +232,129 @@ class Contract(unittest.TestCase):
         err,d,text=await self.call(s,'insert_after_heading',note_id=n,heading='Sec',text='x')
         self.assertTrue(err,text);self.assertIn("collapsible section's title",text)
 
+    # --- Failure-mode simulations: UpNote misbehaving on save (one mode per incident class).
+
+    @async_test
+    async def test_dropped_line_refused_on_append(self):
+        s=await self.client();n=await self.create(s)
+        flat=await self.client('drop-line')
+        err,p,text=await self.call(flat,'append_to_note',note_id=n,text='New last line.')
+        self.assertFalse(err,text)
+        before=self.event_count('create-request')
+        err,d,text=await self.call(flat,'append_to_note',note_id=n,text='New last line.',expected_revision=p['revision'],preview_token=p['preview_token'],acknowledge_warnings=True)
+        self.assertFalse(err,text);self.assertFalse(d['done'],d)
+        # The word gate fires first (the dropped line carries words too), so the message is
+        # the word one; the keep-lines gate backs it up for line-keeping tools.
+        self.assertIn('lacks',text);self.assertIn('original_note_id',d)
+        self.assertEqual(self.event_count('create-request'),before+1,'the create link fires, then the gate keeps both')
+        with sqlite3.connect(self.db) as c:
+            live=c.execute('SELECT count(*) FROM notes WHERE id=? AND trashed=0',(n,)).fetchone()[0]
+        self.assertEqual(live,1,'original must stay live when a line was lost')
+
+    @async_test
+    async def test_dropped_word_refused_on_replace(self):
+        s=await self.client();n=await self.create(s)
+        flat=await self.client('drop-word')
+        err,p,text=await self.call(flat,'replace_note',note_id=n,text='<div>Replacement synthetic text.</div>',markdown=False,server_only=True)
+        self.assertFalse(err,text)
+        err,d,text=await self.call(flat,'replace_note',note_id=n,text='<div>Replacement synthetic text.</div>',markdown=False,server_only=True,expected_revision=p['revision'],preview_token=p['preview_token'],acknowledge_warnings=True)
+        # The word gate compares sent text against the SAVED copy; the fake dropped a word of
+        # the fixture body while rebuilding, so the apply must keep both notes.
+        self.assertFalse(err,text);self.assertFalse(d['done'],d)
+        self.assertIn('lacks',text)
+        with sqlite3.connect(self.db) as c:
+            live=c.execute('SELECT count(*) FROM notes WHERE id=? AND trashed=0',(n,)).fetchone()[0]
+        self.assertEqual(live,1)
+
+    @async_test
+    async def test_dropped_short_word_line_caught_by_keep_lines(self):
+        # The word gate counts only 3+-character words, so a dropped line whose words are all
+        # shorter passes it; the keep-lines gate is the backstop for line-keeping tools. The
+        # note below is seeded with a short-word line; the fake's drop-line mode removes it.
+        s=await self.client();n=await self.create(s)
+        n2=await self.rebuild(s,'replace_note',note_id=n,text='<div>Initial content.</div><div>a b to of</div>',markdown=False,server_only=True)
+        flat=await self.client('drop-line')
+        err,p,text=await self.call(flat,'append_to_note',note_id=n2,text='A normal appended line.')
+        self.assertFalse(err,text)
+        err,d,text=await self.call(flat,'append_to_note',note_id=n2,text='A normal appended line.',expected_revision=p['revision'],preview_token=p['preview_token'],acknowledge_warnings=True)
+        self.assertFalse(err,text);self.assertFalse(d['done'],d)
+        self.assertIn('missing',text);self.assertIn('a b to of',text)
+        with sqlite3.connect(self.db) as c:
+            live=c.execute('SELECT count(*) FROM notes WHERE id=? AND trashed=0',(n2,)).fetchone()[0]
+        self.assertEqual(live,1)
+
+    @async_test
+    async def test_wipe_members_refused_and_reported(self):
+        s=await self.client();n=await self.create(s)
+        flat=await self.client('wipe-members')
+        err,p,text=await self.call(flat,'append_to_note',note_id=n,text='Another line.')
+        self.assertFalse(err,text)
+        err,d,text=await self.call(flat,'append_to_note',note_id=n,text='Another line.',expected_revision=p['revision'],preview_token=p['preview_token'],acknowledge_warnings=True)
+        self.assertFalse(err,text);self.assertFalse(d['done'],d)
+        self.assertIn('dropped',text);self.assertIn('notebook_members_lost',d)
+        lost=d['notebook_members_lost']
+        self.assertGreater(lost['missing'],0)
+        self.assertIn(n,lost['missing_note_ids'],'the original must be named as lost')
+        with sqlite3.connect(self.db) as c:
+            live=c.execute('SELECT count(*) FROM notes WHERE id=? AND trashed=0',(n,)).fetchone()[0]
+            members=json.loads(c.execute("SELECT content FROM lists WHERE id='notebooks_nb-a'").fetchone()[0])
+        self.assertEqual(live,1,'original stays live after a wipe')
+        # The fake wiped the list to the new note alone; the survivor id is the copy, not the original.
+        self.assertEqual(len(members),1)
+        self.assertNotIn(n,members)
+
+    @async_test
+    async def test_blocker_refusals_fire_before_any_link(self):
+        s=await self.client();n=await self.create(s)
+        # Seed the original note with each blocked property, then read the preview refusal.
+        cases=[
+            ("UPDATE notes SET fileIds='[\"f1\"]' WHERE id=?",['attachments or images']),
+            ("UPDATE notes SET html='<div><img src=\"x\"></div>' WHERE id=?",['attachments or images']),
+            ("UPDATE notes SET html='<div><iframe src=\"x\"></iframe></div>' WHERE id=?",['embedded frame']),
+            ("UPDATE notes SET shared=1 WHERE id=?",['shared by web link']),
+            ("UPDATE notes SET isTemplate=1 WHERE id=?",['template']),
+        ]
+        for sql,expect in cases:
+            with sqlite3.connect(self.db) as c:
+                c.execute("UPDATE notes SET trashed=0 WHERE id=?",(n,));c.execute(sql,(n,))
+            err,p,text=await self.call(s,'replace_note',note_id=n,text='<div>Whatever.</div>',markdown=False,server_only=True)
+            self.assertTrue(err,(sql,expect))
+            for frag in expect:self.assertIn(frag,text)
+        before=self.event_count('create-request')
+        self.assertEqual(self.event_count('create-request'),before,'no link is sent for a refused note')
+
+    @async_test
+    async def test_inbound_link_blocks_edit(self):
+        s=await self.client();n=await self.create(s);other=await self.create(s,title='Other fixture')
+        with sqlite3.connect(self.db) as c:
+            c.execute("UPDATE notes SET html=? WHERE id=?",('<div>see <a href="upnote://x-callback-url/openNote?noteId='+n+'">this</a></div>',other))
+        err,d,text=await self.call(s,'replace_note',note_id=n,text='<div>Whatever.</div>',markdown=False,server_only=True)
+        self.assertTrue(err,text);self.assertIn('Other notes link to it',text);self.assertIn('Other fixture',text)
+
+    @async_test
+    async def test_stored_self_link_blocks_edit(self):
+        s=await self.client();n=await self.create(s)
+        with sqlite3.connect(self.db) as c:
+            c.execute("UPDATE notes SET html=? WHERE id=?",('<div><a href="upnote://x-callback-url/openNote?noteId='+n+'">me</a></div>',n))
+        err,d,text=await self.call(s,'replace_note',note_id=n,text='<div>Whatever.</div>',markdown=False,server_only=True)
+        self.assertTrue(err,text);self.assertIn('links to itself',text)
+
+    @async_test
+    async def test_warning_conditions_fire(self):
+        s=await self.client();n=await self.create(s)
+        with sqlite3.connect(self.db) as c:
+            c.execute("UPDATE notes SET bookmarked=1, revision=25, updatedAt=1 WHERE id=?",(n,))
+        err,p,text=await self.call(s,'replace_note',note_id=n,text='<div>Whatever.</div>',markdown=False,server_only=True)
+        self.assertFalse(err,text)
+        joined=' | '.join(p['warnings'])
+        self.assertIn('bookmarked',joined)
+        self.assertIn('25',joined,'long-history warning names the save count')
+        # Two notebooks: add a second membership row for the note.
+        with sqlite3.connect(self.db) as c:
+            c.execute("INSERT INTO notebooks(id,title,parent,deleted) VALUES ('nb-c','Fixture C',NULL,0)")
+            c.execute("INSERT INTO lists(id,content) VALUES ('notebooks_nb-c',?)",(json.dumps([n]),))
+        err,p,text=await self.call(s,'replace_note',note_id=n,text='<div>Whatever.</div>',markdown=False,server_only=True)
+        self.assertFalse(err,text);self.assertIn('several notebooks',' | '.join(p['warnings']))
+
+
 if __name__=='__main__':unittest.main(verbosity=2)
