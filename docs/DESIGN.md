@@ -63,6 +63,12 @@ user and private (0700); pending files and lock files are private (0600). Fixtur
 isolated state. All affected MCP processes must use this version before concurrent
 writes are enabled; older processes ignore these locks.
 
+Before the first change of a session that can add a note to a notebook, the server copies
+the `lists` table's notebook rows to `snapshots/lists-snapshot-<timestamp>.json` in the
+state directory (newest 3 kept). The 2026-10-11 wipe bug is only repairable from such a
+copy, and UpNote's own daily backup can be 24 hours stale; the README's wipe entry gives
+the format and the restore steps.
+
 The pending window is five minutes, and `create_note` is not idempotent.
 Never blindly retry an uncertain create or apply: read the original and any new copy
 first. These checks coordinate requests; they do not make UpNote's URL interface a

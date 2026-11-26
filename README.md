@@ -34,7 +34,9 @@ change tags, move to Trash and back, and open a note in the app.
   checked new version and then moves the original to Trash, where `restore_note` can bring it
   back. The new note gets a new id and creation date. Version History stays with the original,
   and pin and bookmark must be set again by hand. Every edit shows a preview with warnings first,
-  and the word and line checks count duplicates, so a dropped repeated block is caught.
+  and the word and line checks count duplicates, so a dropped repeated block is caught - refused
+  outright for the tools that keep the note's content, and held at the preview as a warning for a
+  full-text replace.
   The tools refuse notes that have attachments or images, an embedded frame, video or audio,
   links from other notes, a link to themselves, a web share link, or a template.
 - **Nothing is deleted for good.** No tool empties Trash.
@@ -65,6 +67,8 @@ change tags, move to Trash and back, and open a note in the app.
 ### Windows
 
 Windows support is new and untested on a real Windows machine - treat it as a preview. The
+server imports and starts on Windows (the Unix-only modules load only on macOS), but nothing
+past the import has run there. The
 server reads `%APPDATA%\UpNote\upnote.sqlite3` (UpNote's Windows data folder; set `UPNOTE_DB`
 if your install keeps it elsewhere). Operation state goes to
 `%LOCALAPPDATA%\upnote-mcp`. No Full Disk Access and no launcher are needed: the database
@@ -241,7 +245,8 @@ process and tool catalog.
 The running server keeps the `server.py` it started with, so restart your clients after an update.
 For a plain checkout, run `git pull` in `~/.claude/mcp-servers/upnote-mcp`. A Python-only update
 does not need a rebuilt or re-signed launcher. Rebuilding the launcher loses its Full Disk Access
-grant: remove it, add it back, and restart Claude.
+grant: remove it, add it back, and restart Claude. Re-running `install.sh` rebuilds the launcher
+too - it warns before it does.
 
 To switch between versions without a gap, keep each version in its own folder, pause calls in every
 client, replace the `~/.claude/mcp-servers/upnote-mcp` link with a temporary sibling link and an
@@ -318,8 +323,9 @@ Full rules, warnings and recipes are in [docs/EDITING.md](docs/EDITING.md).
 ## Limits and known issues
 
 - macOS is the tested platform. Windows reads and writes are wired up but have not run on a
-  real Windows machine; the Windows database path is a best guess from UpNote's documentation
-  and may differ by install type.
+  real Windows machine; the server now imports there (the Unix-only modules load only on
+  macOS), and the Windows database path is a best guess from UpNote's documentation and may
+  differ by install type.
 - The macOS database path defaults to the Mac App Store build's container location only;
   Windows defaults to `%APPDATA%\UpNote\upnote.sqlite3`. Set `UPNOTE_DB` for anything else.
 - `test_live.py --live` stays on hold: its move step rebuilds a note through a create link that
